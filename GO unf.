@@ -1,0 +1,105 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"net"
+	"sync"
+	"time"
+
+	pb "github.com/yourusername/user-service/protos"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
+)
+
+type server struct {
+	pb.UnimplementedUserServiceServer
+	mu    sync.RWMutex
+	users map[string]*pb.User
+	posts map[string][]*pb.Post
+}
+
+type authServer struct {
+	pb.UnimplementedAuthServiceServer
+	users map[string]*pb.User
+}
+
+func main() {
+	lis, err := net.Listen("tcp", ":50051")
+	if err != nil {
+		log.Fatalf("failed to listen: %v", err)
+	}
+
+	s := grpc.NewServer()
+	userServer := &server{
+		users: make(map[string]*pb.User),
+		posts: make(map[string][]*pb.Post),
+	}
+	authServer := &authServer{users: userServer.users}
+
+	pb.RegisterUserServiceServer(s, userServer)
+	pb.RegisterAuthServiceServer(s, authServer)
+
+	log.Printf("Server listening at %v", lis.Addr())
+	if err := s.Serve(lis); err != nil {
+		log.Fatalf("failed to serve: %v", err)
+	}
+}
+
+// AuthService implementation
+func (s *authServer) Login(ctx context.Context, req *pb.LoginRequest) (*pb.LoginResponse, error) {
+	// Authentication logic here
+	return &pb.LoginResponse{
+		AccessToken: "dummy-token",
+		ExpiresAt:   timestamppb.New(time.Now().Add(24 * time.Hour)),
+	}, nil
+}
+
+// UserService implementation
+func (s *server) CreateUser(ctx context.Context, req *pb.CreateUserRequest) (*pb.UserResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Validate input
+	if _, exists := s.users[req.Username]; exists {
+		return nil, status.Errorf(codes.AlreadyExists, "username already exists")
+	}
+
+	newUser := &pb.User{
+		Id:        fmt.Sprintf("user-%d", len(s.users)+1),
+		Username:  req.Username,
+		Email:     req.Email,
+		Profile:   req.Profile,
+		CreatedAt: timestamppb.Now(),
+		UpdatedAt: timestamppb.Now(),
+	}
+
+	s.users[newUser.Id] = newUser
+	return &pb.UserResponse{Result: &pb.UserResponse_User{User: newUser}}, nil
+}
+
+func (s *server) GetUser(ctx context.Context, req *pb.GetUserRequest) (*pb.UserResponse, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	user, exists := s.users[req.UserId]
+	if !exists {
+		return &pb.UserResponse{
+			Result: &pb.UserResponse_Error{
+				Error: &pb.Error{
+					Code:      "NOT_FOUND",
+					Message:   "User not found",
+					Timestamp: timestamppb.Now(),
+				},
+			},
+		}, nil
+	}
+
+	return &pb.UserResponse{Result: &pb.UserResponse_User{User: user}}, nil
+}
+
+// Implement other methods (UpdateUser, DeleteUser, ListUsers, CreatePost, GetUserPosts)
+// Similar pattern with proper locking and error handling
